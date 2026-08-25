@@ -9,7 +9,7 @@ Reusable GitHub composite actions shared across my own repos.
 
 ## Usage
 
-This repo is **private**. Personal GitHub accounts (not orgs) can't reference another private repo's actions directly via `uses: owner/repo/path@ref` — there's no equivalent of the org-level "share actions internally" setting for personal accounts. The reliable pattern is to check this repo out into a subdirectory with a PAT, then reference the action by local path:
+This repo is public, so any repo can reference these actions directly by tag — no checkout or token needed:
 
 ```yaml
 jobs:
@@ -18,16 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out gh-actions
-        uses: actions/checkout@v4
-        with:
-          repository: jwadin/gh-actions
-          ref: v1
-          token: ${{ secrets.GH_ACTIONS_REPO_TOKEN }}
-          path: .gh-actions
-
       - name: Connect to WireGuard VPN
-        uses: ./.gh-actions/wireguard-connect
+        uses: jwadin/gh-actions/wireguard-connect@v1
         with:
           config: ${{ secrets.WG_CONFIG }}
 
@@ -35,10 +27,8 @@ jobs:
 
       - name: Disconnect WireGuard
         if: always()
-        uses: ./.gh-actions/wireguard-disconnect
+        uses: jwadin/gh-actions/wireguard-disconnect@v1
 ```
-
-`GH_ACTIONS_REPO_TOKEN` is a fine-grained PAT with **read-only "Contents" access scoped to just this repo**, added as a secret in whichever repo is consuming these actions. It only needs to read this repo's contents — nothing else.
 
 ## Versioning
 
