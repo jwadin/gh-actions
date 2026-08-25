@@ -1,0 +1,89 @@
+name: Connect to WireGuard
+description: >
+  Bring up a WireGuard tunnel from a client config and confirm the peer
+  handshake actually succeeds, rather than just that the interface exists.
+inputs:
+  config:
+    description: Full WireGuard client config file content (the [Interface]/[Peer] wg-quick config)
+    required: true
+  interface:
+    description: WireGuard interface name
+    required: false
+    default: wg0
+  resolve-single-label:
+    description: >
+      Allow resolving bare single-label hostnames (e.g. "mysql", no dots)
+      via the tunnel's pushed DNS server. systemd-resolved refuses this by
+      default (ResolveUnicastSingleLabel=no) — it only tries LLMNR/mDNS for
+      single-label names, which most VPN links have disabled. Only relevant
+      if whatever you're connecting to is addressed by a single-label name;
+      harmless to leave enabled otherwise.
+    required: false
+    default: "true"
+outputs:
+  endpoint:
+    description: The WireGuard peer endpoint dialed, read from the config's [Peer] Endpoint = line
+    value: ${{ steps.connect.outputs.endpoint }}
+runs:
+  using: composite
+  steps:
+    - name: Install WireGuard tools
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wireguard-tools
+
+    # wg-quick's own DNS integration only updates systemd-resolved's
+    # internal per-link routing, which is useless for single-label names
+    # without this — see the `resolve-single-label` input description.
+    - name: Allow single-label DNS resolution
+      if: inputs.resolve-single-label == 'true'
+      shell: bash
+      run: |
+        sudo mkdir -p /etc/systemd/resolved.conf.d
+        printf '[Resolve]\nResolveUnicastSingleLabel=yes\n' | sudo tee /etc/systemd/resolved.conf.d/single-label.conf > /dev/null
+        sudo systemctl restart systemd-resolved
+
+    - name: Bring up the tunnel
+      id: connect
+      shell: bash
+      env:
+        WG_CONFIG: ${{ inputs.config }}
+        WG_INTERFACE: ${{ inputs.interface }}
+      run: |
+        set -euo pipefail
+        umask 077
+        sudo mkdir -p /etc/wireguard
+        printf '%s' "$WG_CONFIG" | sudo tee "/etc/wireguard/${WG_INTERFACE}.conf" > /dev/null
+
+        endpoint=$(sudo awk -F'= *' '/^Endpoint/{print $2; exit}' "/etc/wireguard/${WG_INTERFACE}.conf")
+        echo "Dialing WireGuard endpoint: ${endpoint:-<none found in config>}"
+        echo "endpoint=${endpoint}" >> "$GITHUB_OUTPUT"
+
+        sudo wg-quick up "$WG_INTERFACE"
+
+        # wg-quick's DNS integration updates systemd-resolved's internal
+        # state but never touches /etc/resolv.conf. Plain glibc-based
+        # resolution (in any later step, or inside a Docker build using
+        # `network: host`) only sees resolved's per-link routing if
+        # resolv.conf is the stub-resolver symlink — not the case by
+        # default on ubuntu-latest.
+        sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+        # Confirm the tunnel itself is actually up (a real handshake with
+        # the peer), not just that wg-quick reported success — it can do
+        # that just from creating the interface, even if the peer never
+        # responds.
+        for i in $(seq 1 15); do
+          handshake=$(sudo wg show "$WG_INTERFACE" latest-handshakes | awk '{print $2}')
+          if [ -n "$handshake" ] && [ "$handshake" != "0" ]; then
+            echo "WireGuard tunnel up — handshake with ${endpoint} confirmed."
+            exit 0
+          fi
+          if [ "$i" -eq 15 ]; then
+            echo "::error::No WireGuard handshake with ${endpoint} — the tunnel itself did not come up."
+            sudo wg show || true
+            exit 1
+          fi
+          sleep 2
+        done

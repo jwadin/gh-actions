@@ -1,0 +1,12 @@
+name: Disconnect WireGuard
+description: Bring down a WireGuard tunnel brought up by the wireguard-connect action.
+inputs:
+  interface:
+    description: WireGuard interface name
+    required: false
+    default: wg0
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: sudo wg-quick down "${{ inputs.interface }}" || true
